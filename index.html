@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Conheça a REPAR – Como Funciona 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@400;700&family=Roboto:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/jogo3d.css">
+</head>
+<body>
+
+<div id="palco3d" aria-hidden="true"></div>
+<div id="rotulos" aria-hidden="true"></div>
+
+<div id="carregando"><div>Carregando a refinaria<div class="barra"><i></i></div></div></div>
+
+<header class="topo">
+  <h1 class="titulo"><span>Conheça a</span>REPAR</h1>
+  <nav class="trilha" id="trilha" aria-label="Etapas do jogo"></nav>
+  <div class="placar" aria-live="polite">
+    <span class="placar-rotulo">Pontuação</span>
+    <strong><span id="pontos">0</span><small>pts</small></strong>
+    <span class="placar-delta" id="placar-delta"></span>
+  </div>
+</header>
+
+<section class="apresentador" id="apresentador" hidden>
+  <div class="personagem" id="personagem" aria-hidden="true"></div>
+  <div class="balao" id="balao" aria-live="polite"></div>
+</section>
+
+<aside class="fluxo" id="fluxo" hidden aria-label="Fluxo desta etapa"></aside>
+<section class="painel-central" id="central" hidden></section>
+<section class="explorar-info" id="explorarInfo" hidden aria-live="polite"></section>
+<div class="dica-flutuante" id="dica" hidden></div>
+<button type="button" class="recentrar" id="recentrar" hidden>Recentralizar câmera</button>
+
+<footer class="rodape">
+  <img src="images/selo_repar30.svg" width="355" height="88" alt="Refinaria Presidente Getúlio Vargas 30 anos" class="logo-selo">
+    <img src="images/petrobras.svg" width="328" height="64" alt="Petrobras" class="logo-petrobras">
+</footer>
+
+<!-- dados do jogo original (perguntas, explicações e o desenho do técnico) e o modelo 3D gerado no Blender -->
+<script src="js/perguntas.js"></script>
+<script src="js/cenas.js"></script>
+<script src="modelo/repar_glb.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const gsap = window.gsap;
+const semMovimento = matchMedia('(prefers-reduced-motion: reduce)').matches || location.search.includes('instantaneo');
+const CHAVE_RECORDE = 'repar-como-funciona-recorde';
+const TOTAL = ETAPAS.length;
+const $ = id => document.getElementById(id);
+const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* ---------- correntes do modelo e o que cada etapa mostra ---------- */
+const CORES = {
+  petroleo: '#ff5a1f', rat: '#a16207', gasoleo: '#f59e0b', residuo_vac: '#a0522d', odes: '#fda4af', craqueado: '#cbd5e1',
+  glp: '#22c55e', nafta_leve: '#fde047', nafta_pesada: '#14b8a6', querosene: '#a855f7', diesel: '#3b82f6',
+  gasolina: '#facc15', qav: '#c084fc', solvente: '#22d3ee', oleo_comb: '#ef4444', rasf: '#94a3b8'
+};
+// unidades em foco e tubulações acesas em cada etapa (ligações do fluxograma "Conheça a REPAR")
+const ETAPA3D = {
+  1: { unidades: ['U01'], tubos: ['P01', 'P02'] },
+  2: { unidades: ['U02'], tubos: ['P02', 'P03', 'P04', 'P05', 'P11', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19'] },
+  3: { unidades: ['U03'], tubos: ['P05', 'P06', 'P07', 'P08'] },
+  4: { unidades: ['U04'], tubos: ['P07', 'P09', 'P10', 'P12', 'P20'] },
+  5: { unidades: ['U05'], tubos: ['P11', 'P12', 'P22'] },
+  6: { unidades: ['U09', 'U11'], tubos: ['P08', 'P09', 'P20', 'P21', 'P27'] },
+  7: { unidades: ['U06'], tubos: ['P13', 'P14', 'P23'] },
+  8: { unidades: ['U07'], tubos: ['P15', 'P17', 'P18', 'P24'] },
+  9: { unidades: ['U08'], tubos: ['P16', 'P25'] },
+  10: { unidades: ['U10'], tubos: ['P19', 'P26'] }
+};
+// cor de cada rótulo das cenas originais
+function corDoRotulo(t) {
+  const s = t.toLowerCase();
+  const regras = [
+    ['peróxida', '#fef08a'], ['solvente', CORES.solvente], ['craqueada', '#fb923c'], ['nafta leve', CORES.nafta_leve],
+    ['nafta pesada', CORES.nafta_pesada], ['qav', CORES.qav], ['querosene', CORES.querosene], ['diesel', CORES.diesel],
+    ['glp', CORES.glp], ['esfera', CORES.glp], ['rat', CORES.rat], ['atmosférico', CORES.rat], ['gasóleo', CORES.gasoleo],
+    ['resíduo de vácuo', CORES.residuo_vac], ['rv', CORES.residuo_vac], ['diluente', CORES.oleo_comb], ['asfáltico', CORES.rasf],
+    ['matéria', CORES.rasf], ['fosfértil', CORES.rasf], ['petr', CORES.petroleo], ['monob', CORES.petroleo], ['oleoduto', CORES.petroleo],
+    ['tanque', CORES.petroleo], ['gasolina', CORES.gasolina], ['distribuidora', '#e2e8f0'], ['posto', '#e2e8f0'], ['mistura', '#e2e8f0']
+  ];
+  for (const [k, c] of regras) if (s.includes(k)) return c;
+  return '#e2e8f0';
+}
+
+/* ---------- cena 3D ---------- */
+const palco = $('palco3d');
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+palco.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+// Ambiente: dia (padrão) ou fim de tarde (abrir com ?noite no endereço)
+const NOITE = location.search.includes('noite');
+const AMB = NOITE ? {
+  ceu: [[0, '#081426'], [.42, '#16355a'], [.52, '#d9824f'], [.56, '#2a4a6e'], [1, '#0c2238']],
+  nevoa: [0x10263d, 240, 620], hemi: [0xa9c8ff, 0x24361f, 0.85], sol: [0xffc9a0, 2.3], contra: 0.6,
+  bloom: [0.55, 0.45, 0.9], exposicao: 1.0, sombras: false, esmaecer: ['#0d1d2e', .68]
+} : {
+  ceu: [[0, '#5d9fd6'], [.45, '#a9cfee'], [.55, '#dcebf6'], [.62, '#c4dbea'], [1, '#b3cfe2']],
+  nevoa: [0xcfe2ef, 320, 760], hemi: [0xe4f1ff, 0x5b6b45, 1.15], sol: [0xfff3e2, 3.1], contra: 0.35,
+  bloom: [0.18, 0.3, 0.97], exposicao: 1.0, sombras: true, esmaecer: ['#c9d4dc', .55]
+};
+{
+  const c = document.createElement('canvas'); c.width = 4; c.height = 256;
+  const g = c.getContext('2d'), gr = g.createLinearGradient(0, 0, 0, 256);
+  AMB.ceu.forEach(([p, cor]) => gr.addColorStop(p, cor));
+  g.fillStyle = gr; g.fillRect(0, 0, 4, 256);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; scene.background = tex;
+}
+scene.fog = new THREE.Fog(...AMB.nevoa);
+renderer.toneMappingExposure = AMB.exposicao;
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight(...AMB.hemi));
+const sol = new THREE.DirectionalLight(...AMB.sol); sol.position.set(-120, 140, 70); scene.add(sol);
+if (AMB.sombras) {
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  sol.castShadow = true; sol.shadow.mapSize.set(2048, 2048);
+  Object.assign(sol.shadow.camera, { left: -125, right: 125, top: 125, bottom: -125, near: 20, far: 450 });
+  sol.shadow.bias = -0.0005; sol.shadow.normalBias = 0.05;
+}
+const contra = new THREE.DirectionalLight(0x9fbfff, AMB.contra); contra.position.set(90, 60, -80); scene.add(contra);
+
+const camera = new THREE.PerspectiveCamera(36, innerWidth / innerHeight, 0.5, 2000);
+const CASA = { pos: new THREE.Vector3(-92, 112, 128), alvo: new THREE.Vector3(-4, 0, 4) };
+camera.position.copy(CASA.pos);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.copy(CASA.alvo);
+controls.enableDamping = true; controls.dampingFactor = 0.07;
+controls.minDistance = 12; controls.maxDistance = 330; controls.maxPolarAngle = 1.3;
+controls.autoRotateSpeed = 0.35;
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), ...AMB.bloom);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+/* ---------- estado ---------- */
+const unidades = {}, equipamentos = {}, tubos = {};
+let clicaveis = [];
+const jogo = { modo: 'carregando', indice: 0, pontos: 0, respostas: [] };
+
+const cacheEsmaecido = new Map();
+const TOM = new THREE.Color(AMB.esmaecer[0]);
+function esmaecido(m) {
+  if (!cacheEsmaecido.has(m.uuid)) {
+    const d = m.clone();
+    if (d.color) d.color.lerp(TOM, AMB.esmaecer[1]);
+    if (d.emissive) d.emissiveIntensity *= .08;
+    d.envMapIntensity = .15;
+    cacheEsmaecido.set(m.uuid, d);
+  }
+  return cacheEsmaecido.get(m.uuid);
+}
+function esmaecer(no, sim) {
+  no.traverse(o => {
+    if (!o.isMesh) return;
+    if (!o.userData.orig) o.userData.orig = o.material;
+    const orig = o.userData.orig;
+    o.material = sim ? (Array.isArray(orig) ? orig.map(esmaecido) : esmaecido(orig)) : orig;
+  });
+}
+
+/* ---------- carregar o modelo (embutido em modelo/repar_glb.js) ---------- */
+const draco = new DRACOLoader().setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/gltf/');
+const loader = new GLTFLoader().setDRACOLoader(draco);
+const bin = Uint8Array.from(atob(window.REPAR_GLB_B64), c => c.charCodeAt(0)).buffer;
+loader.parse(bin, '', gltf => {
+  const raiz = gltf.scene;
+  raiz.traverse(o => {
+    if (o.isMesh) {
+      (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
+        m.envMapIntensity = .6;
+        if (NOITE) { if (m.emissiveIntensity > 5) m.emissiveIntensity = /janela/.test(m.name) ? 1.6 : 3.2; return; }
+        // de dia: luzes apagadas, janelas viram vidro, tubulações coloridas sem brilho
+        if (/^luz_(quente|fria)/.test(m.name)) { m.emissiveIntensity = 0; m.color.set('#e9edf0'); }
+        else if (/janela_acesa/.test(m.name)) { m.emissiveIntensity = 0; m.color.set('#4d7a99'); m.roughness = .15; m.metalness = .3; }
+        else if (/^fluxo_/.test(m.name)) m.emissiveIntensity = .25;
+        else if (/brilho_forno/.test(m.name)) m.emissiveIntensity = 1.2;
+        else if (/^luz_/.test(m.name)) m.emissiveIntensity = 1.5;
+        else if (/faixa_/.test(m.name)) m.emissiveIntensity = 0;
+        if (m.name === 'agua') { m.color.set('#2f6f9b'); m.roughness = .3; }
+      });
+      if (AMB.sombras) {
+        let p = o, tipo = ''; while (p) { if (p.userData?.tipo) { tipo = p.userData.tipo; break; } p = p.parent; }
+        const nome = o.name + ' ' + (o.parent?.name || '');
+        o.receiveShadow = true;
+        o.castShadow = !/Agua|Terreno|Orla|piso/.test(nome);
+      }
+    }
+    const ud = o.userData || {};
+    if (ud.tipo === 'unidade') unidades[o.name] = { no: o, nome: ud.nome, num: ud.num, descricao: ud.descricao, equips: [] };
+  });
+  scene.add(raiz); raiz.updateMatrixWorld(true);
+  raiz.traverse(o => {
+    const ud = o.userData || {};
+    if (ud.tipo === 'equipamento') { equipamentos[o.name] = { no: o, d: ud, caixa: new THREE.Box3().setFromObject(o) }; unidades[ud.unidade]?.equips.push(o.name); }
+    if (ud.tipo === 'tubulacao') criarFluxo(o);
+    if (o.isMesh) {
+      let p = o; while (p && !p.userData?.tipo) p = p.parent;
+      if (p && ['equipamento', 'piso'].includes(p.userData.tipo)) clicaveis.push(o);
+    }
+  });
+  for (const id in unidades) unidades[id].caixa = new THREE.Box3().setFromObject(unidades[id].no);
+  criarRotulos();
+  const ld = $('carregando'); ld.style.opacity = 0; setTimeout(() => ld.remove(), 600);
+  telaInicial();
+}, err => { $('carregando').firstElementChild.textContent = 'Não foi possível carregar a refinaria 3D. Verifique a conexão com a internet e recarregue a página.'; console.error(err); });
+
+/* ---------- partículas que correm pelas tubulações ---------- */
+const geoParticula = new THREE.SphereGeometry(.38, 10, 8);
+function criarFluxo(no) {
+  const ud = no.userData;
+  const pts = JSON.parse(ud.path).map(([x, y, z]) => new THREE.Vector3(x, z, -y));
+  const segs = []; let L = 0;
+  for (let i = 0; i < pts.length - 1; i++) { const l = pts[i].distanceTo(pts[i + 1]); segs.push({ a: pts[i], b: pts[i + 1], s: L, l }); L += l; }
+  const n = Math.max(2, Math.floor(L / 2.4));
+  const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(CORES[ud.fluxo] || '#fff').multiplyScalar(1.8), toneMapped: false });
+  const inst = new THREE.InstancedMesh(geoParticula, mat, n); inst.frustumCulled = false; inst.visible = false;
+  scene.add(inst);
+  tubos[no.name] = { no, d: ud, pts, segs, L, inst, n, passo: L / n, vel: 1, esc: 1 };
+}
+const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _q = new THREE.Quaternion();
+function animarFluxo(t) {
+  for (const id in tubos) {
+    const tb = tubos[id]; if (!tb.inst.visible) continue;
+    const off = semMovimento ? 0 : (t * 7 * tb.vel) % tb.passo;
+    for (let i = 0; i < tb.n; i++) {
+      const d = i * tb.passo + off; let sg = tb.segs[tb.segs.length - 1];
+      for (const s of tb.segs) if (d <= s.s + s.l) { sg = s; break; }
+      _p.lerpVectors(sg.a, sg.b, Math.min(1, (d - sg.s) / sg.l));
+      _s.setScalar(tb.esc); _m.compose(_p, _q, _s); tb.inst.setMatrixAt(i, _m);
+    }
+    tb.inst.instanceMatrix.needsUpdate = true;
+  }
+}
+
+/* ---------- câmera ---------- */
+let deslocX = 0, deslocY = 0;
+function enquadrarTela() {
+  // centraliza o foco no espaço livre ao lado do balão (desktop) ou acima dele (celular)
+  const W = innerWidth, H = innerHeight; deslocX = 0; deslocY = 0;
+  const ap = $('apresentador'), fl = $('fluxo');
+  if (W > 820) {
+    const esq = ap.hidden ? 0 : ap.getBoundingClientRect().right;
+    const dir = fl.hidden ? W : fl.getBoundingClientRect().left;
+    if (!ap.hidden) deslocX = (esq + dir) / 2 - W / 2;
+  } else if (!ap.hidden) {
+    const topo = ap.getBoundingClientRect().top; deslocY = (topo + 90) / 2 - H / 2;
+  }
+  camera.aspect = W / H; camera.setViewOffset(W, H, -deslocX, -deslocY, W, H); camera.updateProjectionMatrix();
+}
+function voar(pos, alvo, dur = 1.6) {
+  gsap.killTweensOf(camera.position); gsap.killTweensOf(controls.target);
+  const d = semMovimento ? 0 : dur;
+  gsap.to(camera.position, { x: pos.x, y: pos.y, z: pos.z, duration: d, ease: 'power2.inOut' });
+  gsap.to(controls.target, { x: alvo.x, y: alvo.y, z: alvo.z, duration: d, ease: 'power2.inOut' });
+}
+const AZ = Math.atan2(CASA.pos.x - CASA.alvo.x, CASA.pos.z - CASA.alvo.z);
+function focarCaixa(caixa, k = 6.2, polar = .88, minD = 78, maxD = 150) {
+  const c = caixa.getCenter(new THREE.Vector3()), s = caixa.getSize(new THREE.Vector3());
+  const r = Math.max(s.x, s.z, s.y * .9) * .5;
+  const dist = Math.min(maxD, Math.max(minD, r * k)) * (innerWidth < 820 ? 1.3 : 1);
+  const alvo = new THREE.Vector3(c.x, Math.min(c.y, 4), c.z);
+  const dir = new THREE.Vector3(Math.sin(AZ) * Math.sin(polar), Math.cos(polar), Math.cos(AZ) * Math.sin(polar));
+  voar(alvo.clone().add(dir.multiplyScalar(dist)), alvo);
+}
+let focoAtual = null;
+function focarEtapa(n) {
+  const cfg = ETAPA3D[n], caixa = new THREE.Box3();
+  cfg.unidades.forEach(u => caixa.union(unidades[u].caixa));
+  focoAtual = caixa; focarCaixa(caixa);
+}
+
+/* ---------- destaque da etapa ---------- */
+function destacar(unidadesAcesas, tubosAcesos, vel = 1.3) {
+  const U = new Set(unidadesAcesas), T = new Set(tubosAcesos), tudo = !unidadesAcesas;
+  for (const u in unidades) esmaecer(unidades[u].no, !tudo && !U.has(u));
+  for (const id in tubos) {
+    const on = tudo || T.has(id), tb = tubos[id];
+    esmaecer(tb.no, !on); tb.inst.visible = on; tb.vel = vel; tb.esc = tudo ? .85 : 1.1;
+  }
+  for (const r of rotulos) {
+    if (r.tipo === 'unidade') {
+      const ativo = !tudo && U.has(r.id);
+      r.el.className = 'rot3d' + (ativo ? '' : ' mini');
+      r.el.hidden = jogo.modo === 'pergunta' || jogo.modo === 'resposta' ? !ativo : false;
+    }
+  }
+}
+
+/* ---------- rótulos presos às unidades ---------- */
+const rotulos = [];
+function criarRotulos() {
+  for (const u of Object.keys(unidades).sort()) {
+    const U = unidades[u], c = U.caixa.getCenter(new THREE.Vector3());
+    const el = document.createElement('div'); el.className = 'rot3d mini';
+    el.innerHTML = `<b>${U.num}</b><span>${esc(U.nome)}</span>`;
+    el.addEventListener('click', () => { if (jogo.modo === 'explorar') explorarUnidade(u); });
+    $('rotulos').appendChild(el);
+    rotulos.push({ el, tipo: 'unidade', id: u, pos: new THREE.Vector3(c.x, Math.min(U.caixa.max.y, 18) + 3, c.z) });
+  }
+}
+const _v = new THREE.Vector3();
+function posicionarRotulos() {
+  for (const r of rotulos) {
+    if (r.el.hidden) continue;
+    _v.copy(r.pos).project(camera);
+    const vis = _v.z < 1 && Math.abs(_v.x) < 1.05 && Math.abs(_v.y) < 1.05;
+    r.el.style.visibility = vis ? 'visible' : 'hidden';
+    if (vis) r.el.style.transform = `translate(${(_v.x * .5 + .5) * innerWidth}px, ${(-_v.y * .5 + .5) * innerHeight - (r.el.classList.contains('mini') ? 0 : 26)}px) translate(-50%, -100%)`;
+  }
+}
+
+/* ---------- placar e trilha ---------- */
+function lerRecorde() { try { return Number(localStorage.getItem(CHAVE_RECORDE)) || 0; } catch { return 0; } }
+function salvarRecorde(p) { try { if (p > lerRecorde()) localStorage.setItem(CHAVE_RECORDE, String(p)); } catch { /* sem armazenamento */ } }
+function mudarPontos(delta) {
+  jogo.pontos = Math.max(REGRAS.pontuacaoMinima ?? 0, jogo.pontos + delta);
+  $('pontos').textContent = jogo.pontos;
+  const d = $('placar-delta'); d.textContent = delta > 0 ? `+${delta}` : `${delta}`;
+  d.className = 'placar-delta'; void d.offsetWidth; d.classList.add(delta > 0 ? 'mais' : 'menos');
+}
+function desenharTrilha(atual) {
+  const partes = [];
+  ETAPAS.forEach((_, i) => {
+    const cls = ['no'];
+    if (i === atual) cls.push('atual');
+    else if (i < jogo.respostas.length) cls.push(jogo.respostas[i] ? 'certa' : 'errada');
+    if (i) partes.push(`<span class="tubo${i <= jogo.respostas.length ? ' cheio' : ''}"></span>`);
+    partes.push(`<span class="${cls.join(' ')}"${i === atual ? ' aria-current="step"' : ''} title="Etapa ${i + 1}">${i + 1}</span>`);
+  });
+  partes.push(`<span class="tubo${jogo.respostas.length === TOTAL ? ' cheio' : ''}"></span><span class="no fim${atual === 'fim' ? ' atual' : ''}">Fim</span>`);
+  $('trilha').innerHTML = partes.join('');
+}
+
+/* ---------- textos ---------- */
+function formatarExplicacao(texto) {
+  return texto.split('\n\n').map(par => {
+    const [primeira, ...resto] = par.split('\n');
+    if (resto.length && primeira === primeira.toUpperCase()) return `<p><strong>${esc(primeira)}</strong>${esc(resto.join(' '))}</p>`;
+    return `<p>${esc(par)}</p>`;
+  }).join('');
+}
+function chipsClaros(lista) { return lista.map(t => `<span class="chip"><i style="color:${corDoRotulo(t)}"></i>${esc(t)}</span>`).join(''); }
+function painelFluxo(e) {
+  const ent = e.cena.entrada || [], sai = e.cena.rotulos || [];
+  $('fluxo').innerHTML = `
+    <div class="rot">Etapa ${String(e.etapa).padStart(2, '0')}</div>
+    <h3>${esc(e.cena.titulo)}</h3>
+    ${ent.length ? `<div class="rot">Entra</div><div class="chips">${chipsClaros(ent)}</div><div class="seta" aria-hidden="true">▼</div>` : ''}
+    <div class="rot">${ent.length ? 'Sai' : 'Caminho'}</div><div class="chips">${chipsClaros(sai)}</div>
+    <p class="dica">As tubulações acesas na maquete mostram esse fluxo. Arraste para girar e use o scroll para aproximar.</p>`;
+  $('fluxo').hidden = false;
+}
+
+/* ---------- telas ---------- */
+function mostrarApresentador(html) {
+  $('central').hidden = true; $('explorarInfo').hidden = true; $('dica').hidden = true;
+  $('apresentador').hidden = false;
+  const b = $('balao'); b.innerHTML = html; b.scrollTop = 0; b.style.animation = 'none'; void b.offsetWidth; b.style.animation = '';
+  requestAnimationFrame(enquadrarTela);
+}
+function reagir(feliz) {
+  const p = $('personagem'); p.classList.remove('feliz', 'triste'); void p.offsetWidth; p.classList.add(feliz ? 'feliz' : 'triste');
+}
+
+function telaInicial() {
+  jogo.modo = 'inicio'; jogo.indice = 0; jogo.pontos = 0; jogo.respostas = [];
+  $('pontos').textContent = '0'; desenharTrilha(-1);
+  $('apresentador').hidden = true; $('fluxo').hidden = true; $('explorarInfo').hidden = true; $('recentrar').hidden = true;
+  destacar(null); enquadrarTela();
+  controls.autoRotate = !semMovimento; voar(CASA.pos, CASA.alvo, 2.2);
+  const rec = lerRecorde();
+  $('central').innerHTML = `
+    <div class="cabeca"><div>${Cenas.personagem()}</div>
+      <h2>Olá! Vamos conhecer como funciona a Refinaria Presidente Getúlio Vargas?</h2></div>
+    <p>Em ${TOTAL} etapas você acompanha o caminho do petróleo, do navio no terminal de São Francisco do Sul até o GLP,
+    a gasolina, o diesel, o querosene de aviação e os solventes. Em cada etapa a câmera leva você até a unidade e as
+    tubulações acesas mostram o que entra e o que sai.</p>
+    <div class="regras">
+      <div><b>+${REGRAS.pontosAcerto}</b><small>por acerto</small></div>
+      <div><b>${REGRAS.pontosErro}</b><small>por erro</small></div>
+      <div><b>${rec || '—'}</b><small>seu recorde</small></div>
+    </div>
+    <div class="acoes">
+      <button type="button" class="botao verde" id="btn-jogar">Começar &gt;&gt;</button>
+      <button type="button" class="botao claro" id="btn-explorar">Explorar a refinaria</button>
+    </div>`;
+  $('central').hidden = false;
+  $('btn-jogar').addEventListener('click', () => telaPergunta(0));
+  $('btn-explorar').addEventListener('click', modoExplorar);
+  $('btn-jogar').focus({ preventScroll: true });
+}
+
+function telaPergunta(i) {
+  jogo.modo = 'pergunta'; jogo.indice = i; controls.autoRotate = false;
+  const e = ETAPAS[i], cfg = ETAPA3D[e.etapa];
+  desenharTrilha(i);
+  const letras = ['A', 'B', 'C', 'D'];
+  const ent = e.cena.entrada || [], sai = e.cena.rotulos || [];
+  mostrarApresentador(`
+    <div class="olho">Etapa ${String(i + 1).padStart(2, '0')} <i>de ${TOTAL} · ${esc(e.cena.titulo)}</i></div>
+    <h2 id="pergunta">${esc(e.pergunta)}</h2>
+    <div class="chips chips-mobile">${chipsClaros([...ent, ...sai].slice(0, 6))}</div>
+    <form id="form-resposta">
+      <fieldset class="alternativas" id="alts" aria-labelledby="pergunta">
+        ${e.alternativas.map((a, k) => `<label class="alt" data-k="${k}"><input type="radio" name="resposta" value="${k}"><span class="letra">${letras[k]}</span><span>${esc(a)}</span></label>`).join('')}
+      </fieldset>
+      <div class="acoes"><button type="submit" class="botao" id="btn-responder" disabled>Responder &gt;&gt;</button></div>
+    </form>`);
+  painelFluxo(e);
+  $('recentrar').hidden = false;
+  destacar(cfg.unidades, cfg.tubos, 1.2);
+  requestAnimationFrame(() => { enquadrarTela(); focarEtapa(e.etapa); });
+  const form = $('form-resposta'), btn = $('btn-responder');
+  form.addEventListener('change', () => { btn.disabled = false; });
+  form.addEventListener('submit', ev => { ev.preventDefault(); responder(i, Number(new FormData(form).get('resposta'))); });
+}
+
+function responder(i, escolhida) {
+  jogo.modo = 'resposta';
+  const e = ETAPAS[i], acertou = escolhida === e.correta;
+  jogo.respostas[i] = acertou;
+  mudarPontos(acertou ? REGRAS.pontosAcerto : REGRAS.pontosErro);
+  desenharTrilha(i); reagir(acertou);
+  // fluxo acelera ao acertar
+  const cfg = ETAPA3D[e.etapa]; cfg.tubos.forEach(id => { tubos[id].vel = acertou ? 2.6 : 1.2; });
+  const ultima = i === TOTAL - 1;
+  const alts = e.alternativas.map((a, k) => {
+    const cls = k === e.correta ? 'certa' : (k === escolhida ? 'errada' : '');
+    return `<div class="alt ${cls}"><span class="letra">${'ABCD'[k]}</span><span>${esc(a)}</span></div>`;
+  }).join('');
+  mostrarApresentador(`
+    <div class="olho">Etapa ${String(i + 1).padStart(2, '0')} <i>de ${TOTAL} · ${esc(e.cena.titulo)}</i></div>
+    ${acertou
+      ? `<p class="resultado certa"><b>Resposta certa!</b> +${REGRAS.pontosAcerto} pontos</p>`
+      : `<p class="resultado errada"><b>Não foi dessa vez.</b> ${REGRAS.pontosErro} pontos</p>`}
+    <div class="alternativas" style="margin-bottom:10px">${alts}</div>
+    <div class="explicacao" tabindex="0">${formatarExplicacao(e.explicacao)}</div>
+    <div class="acoes"><button type="button" class="botao verde" id="btn-proxima">${ultima ? 'Ver resultado' : 'Próxima etapa'} &gt;&gt;</button></div>`);
+  const btn = $('btn-proxima'); btn.focus({ preventScroll: true });
+  btn.addEventListener('click', () => ultima ? telaFinal() : telaPergunta(i + 1));
+}
+
+function telaFinal() {
+  jogo.modo = 'fim';
+  const certos = jogo.respostas.filter(Boolean).length, anterior = lerRecorde();
+  salvarRecorde(jogo.pontos);
+  desenharTrilha('fim');
+  $('apresentador').hidden = true; $('fluxo').hidden = true; $('recentrar').hidden = true;
+  destacar(null); enquadrarTela(); controls.autoRotate = !semMovimento; voar(CASA.pos, CASA.alvo, 2.4);
+  const novo = jogo.pontos > anterior && anterior > 0;
+  $('central').innerHTML = `
+    <div class="cabeca"><div>${Cenas.personagem()}</div><h2>Obrigado por participar!</h2></div>
+    <p style="margin-bottom:0">Sua pontuação</p>
+    <p class="numero-final">${jogo.pontos}</p>
+    <p>${certos} de ${TOTAL} respostas certas${novo ? ' · <b>novo recorde!</b>' : (anterior ? ` · recorde: ${Math.max(anterior, jogo.pontos)} pts` : '')}</p>
+    <div class="resumo-etapas" aria-label="Resultado por etapa">${jogo.respostas.map((r, k) => `<span class="${r ? 'c' : 'e'}" title="Etapa ${k + 1}: ${r ? 'certa' : 'errada'}">${k + 1}</span>`).join('')}</div>
+    <div class="acoes">
+      <button type="button" class="botao verde" id="btn-novamente">Jogar novamente</button>
+      <button type="button" class="botao" id="btn-explorar">Explorar a refinaria</button>
+    </div>`;
+  $('central').hidden = false;
+  $('btn-novamente').addEventListener('click', telaInicial);
+  $('btn-explorar').addEventListener('click', modoExplorar);
+}
+
+/* ---------- modo explorar (livre) ---------- */
+function modoExplorar() {
+  jogo.modo = 'explorar'; controls.autoRotate = false;
+  $('central').hidden = true; $('apresentador').hidden = true; $('fluxo').hidden = true; $('explorarInfo').hidden = true;
+  destacar(null); enquadrarTela(); voar(CASA.pos, CASA.alvo, 1.6);
+  $('dica').innerHTML = 'Clique numa unidade ou equipamento · <button type="button" class="botao claro" id="btn-sair" style="padding:3px 10px;font-size:13px;margin-left:6px">Voltar ao jogo</button>';
+  $('dica').hidden = false;
+  $('btn-sair').addEventListener('click', telaInicial);
+}
+function painelExplorar(html) {
+  $('explorarInfo').innerHTML = html + `<div class="acoes"><button type="button" class="botao claro" id="btn-geral">Visão geral</button></div>`;
+  $('explorarInfo').hidden = false; $('dica').hidden = true;
+  $('btn-geral').addEventListener('click', modoExplorar);
+}
+function explorarUnidade(u) {
+  const U = unidades[u];
+  const tubosU = Object.keys(tubos).filter(id => tubos[id].d.de === u || tubos[id].d.para === u);
+  destacar([u], tubosU, 1.2); focarCaixa(U.caixa, 5.5, .9, 70);
+  painelExplorar(`<div class="olho" style="color:var(--verde);font-family:var(--fonte);font-weight:700;letter-spacing:.1em;text-transform:uppercase;font-size:13px">Unidade ${U.num}</div>
+    <h2>${esc(U.nome)}</h2><p>${esc(U.descricao)}</p>
+    <dl><dt>Equipamentos</dt><dd>${U.equips.map(e => esc(equipamentos[e].d.nome)).join(' · ')}</dd></dl>`);
+}
+function explorarEquip(nome) {
+  const E = equipamentos[nome], d = E.d;
+  const tubosU = Object.keys(tubos).filter(id => tubos[id].d.de === d.unidade || tubos[id].d.para === d.unidade);
+  destacar([d.unidade], tubosU, 1.2); focarCaixa(E.caixa, 4.5, 1.0, 32, 70);
+  painelExplorar(`<div class="olho" style="color:var(--verde);font-family:var(--fonte);font-weight:700;letter-spacing:.1em;text-transform:uppercase;font-size:13px">${esc(d.categoria)} · ${esc(unidades[d.unidade].nome)}</div>
+    <h2>${esc(d.nome)}</h2><p>${esc(d.funcao)}</p>
+    <dl><dt>Entradas</dt><dd>${esc(d.entradas)}</dd><dt>Saídas</dt><dd>${esc(d.saidas)}</dd></dl>`);
+}
+
+/* ---------- clique na maquete ---------- */
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+function pegar(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(clicaveis, false)[0];
+  if (!hit) return null;
+  let p = hit.object; while (p && !p.userData?.tipo) p = p.parent; return p;
+}
+let toque = null;
+renderer.domElement.addEventListener('pointerdown', e => { toque = { x: e.clientX, y: e.clientY }; controls.autoRotate = false; });
+renderer.domElement.addEventListener('pointerup', e => {
+  if (jogo.modo !== 'explorar' || !toque || Math.hypot(e.clientX - toque.x, e.clientY - toque.y) > 5) return;
+  const n = pegar(e); if (!n) return;
+  if (n.userData.tipo === 'equipamento') explorarEquip(n.name); else explorarUnidade(n.userData.unidade);
+});
+renderer.domElement.addEventListener('pointermove', e => {
+  if (jogo.modo !== 'explorar' || e.buttons) return;
+  renderer.domElement.style.cursor = pegar(e) ? 'pointer' : '';
+});
+$('recentrar').addEventListener('click', () => { if (focoAtual) focarCaixa(focoAtual); });
+addEventListener('keydown', e => {
+  if (jogo.modo === 'pergunta' && ['1', '2', '3', 'a', 'b', 'c'].includes(e.key.toLowerCase())) {
+    const k = '123'.includes(e.key) ? Number(e.key) - 1 : 'abc'.indexOf(e.key.toLowerCase());
+    const inp = document.querySelector(`#alts input[value="${k}"]`); if (inp) { inp.checked = true; inp.dispatchEvent(new Event('change', { bubbles: true })); }
+  }
+  if (e.key === 'Escape' && jogo.modo === 'explorar') modoExplorar();
+});
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  enquadrarTela();
+});
+
+/* ---------- laço ---------- */
+$('personagem').innerHTML = Cenas.personagem();
+desenharTrilha(-1);
+const relogio = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const t = relogio.getElapsedTime();
+  controls.update();
+  animarFluxo(t);
+  posicionarRotulos();
+  composer.render();
+});
+</script>
+</body>
+</html>
